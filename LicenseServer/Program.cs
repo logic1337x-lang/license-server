@@ -34,7 +34,9 @@ app.MapPost("/activate", async (HttpRequest request) =>
             Token = Guid.NewGuid().ToString("N"),
             ActivatedAtUtc = DateTime.UtcNow,
             IsBanned = false,
-            FailedAttempts = 0
+            FailedAttempts = 0,
+            OtherDeviceAttempts = 0,
+            LastOtherDeviceId = ""
         };
         db.Licenses[licenseKey] = record;
         SaveDb(dbPath, db);
@@ -48,7 +50,7 @@ app.MapPost("/activate", async (HttpRequest request) =>
 
     if (!string.Equals(record.DeviceId, deviceId, StringComparison.Ordinal))
     {
-        RegisterFailure(record);
+        RegisterFailure(record, deviceId);
         SaveDb(dbPath, db);
         return Results.StatusCode(403);
     }
@@ -83,7 +85,7 @@ app.MapPost("/check", async (HttpRequest request) =>
 
     if (!ok)
     {
-        RegisterFailure(record);
+        RegisterFailure(record, payload.DeviceId.Trim());
         SaveDb(dbPath, db);
         return Results.StatusCode(403);
     }
@@ -118,7 +120,7 @@ app.MapPost("/download", async (HttpRequest request) =>
 
     if (!ok)
     {
-        RegisterFailure(record);
+        RegisterFailure(record, payload.DeviceId.Trim());
         SaveDb(dbPath, db);
         return Results.StatusCode(403);
     }
@@ -201,7 +203,9 @@ app.MapPost("/ban", async (HttpRequest request) =>
             Token = "",
             ActivatedAtUtc = DateTime.UtcNow,
             IsBanned = true,
-            FailedAttempts = 0
+            FailedAttempts = 0,
+            OtherDeviceAttempts = 0,
+            LastOtherDeviceId = ""
         };
         db.Licenses[key] = record;
     }
@@ -242,6 +246,8 @@ app.MapPost("/unban", async (HttpRequest request) =>
     {
         record.IsBanned = false;
         record.FailedAttempts = 0;
+        record.OtherDeviceAttempts = 0;
+        record.LastOtherDeviceId = "";
         SaveDb(dbPath, db);
     }
 
@@ -278,7 +284,9 @@ app.MapPost("/list", async (HttpRequest request) =>
         token = kvp.Value.Token,
         activatedAtUtc = kvp.Value.ActivatedAtUtc,
         isBanned = kvp.Value.IsBanned,
-        failedAttempts = kvp.Value.FailedAttempts
+        failedAttempts = kvp.Value.FailedAttempts,
+        otherDeviceAttempts = kvp.Value.OtherDeviceAttempts,
+        lastOtherDeviceId = kvp.Value.LastOtherDeviceId
     });
 
     return Results.Ok(new { items });
@@ -286,9 +294,14 @@ app.MapPost("/list", async (HttpRequest request) =>
 
 app.Run();
 
-static void RegisterFailure(LicenseRecord record)
+static void RegisterFailure(LicenseRecord record, string deviceId)
 {
     record.FailedAttempts++;
+    if (!string.IsNullOrWhiteSpace(deviceId) && !string.Equals(record.DeviceId, deviceId, StringComparison.Ordinal))
+    {
+        record.OtherDeviceAttempts++;
+        record.LastOtherDeviceId = deviceId;
+    }
     if (record.FailedAttempts >= 10)
     {
         record.IsBanned = true;
@@ -332,4 +345,6 @@ class LicenseRecord
     public DateTime ActivatedAtUtc { get; set; }
     public bool IsBanned { get; set; }
     public int FailedAttempts { get; set; }
+    public int OtherDeviceAttempts { get; set; }
+    public string LastOtherDeviceId { get; set; } = "";
 }
