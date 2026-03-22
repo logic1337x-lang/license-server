@@ -26,6 +26,10 @@ app.MapPost("/activate", async (HttpRequest request) =>
     var licenseKey = payload.LicenseKey.Trim();
     var deviceId = payload.DeviceId.Trim();
     var hwid = payload.Hwid?.Trim() ?? "";
+    if (string.IsNullOrWhiteSpace(hwid))
+    {
+        return Results.BadRequest(new { error = "hwid is required" });
+    }
 
     if (!db.Licenses.TryGetValue(licenseKey, out var record))
     {
@@ -57,10 +61,16 @@ app.MapPost("/activate", async (HttpRequest request) =>
         return Results.StatusCode(403);
     }
 
-    if (string.IsNullOrWhiteSpace(record.Hwid) && !string.IsNullOrWhiteSpace(hwid))
+    if (string.IsNullOrWhiteSpace(record.Hwid))
     {
         record.Hwid = hwid;
         SaveDb(dbPath, db);
+    }
+    else if (!string.Equals(record.Hwid, hwid, StringComparison.Ordinal))
+    {
+        RegisterFailure(db, record, deviceId);
+        SaveDb(dbPath, db);
+        return Results.StatusCode(403);
     }
 
     return Results.Ok(new ActivateResponse(record.Token, "ok"));
@@ -77,6 +87,10 @@ app.MapPost("/check", async (HttpRequest request) =>
     {
         return Results.BadRequest(new { error = "licenseKey, deviceId and token are required" });
     }
+    if (string.IsNullOrWhiteSpace(payload.Hwid))
+    {
+        return Results.BadRequest(new { error = "hwid is required" });
+    }
 
     if (!db.Licenses.TryGetValue(payload.LicenseKey.Trim(), out var record))
     {
@@ -89,19 +103,14 @@ app.MapPost("/check", async (HttpRequest request) =>
     }
 
     var ok = string.Equals(record.DeviceId, payload.DeviceId.Trim(), StringComparison.Ordinal)
-        && string.Equals(record.Token, payload.Token.Trim(), StringComparison.Ordinal);
+        && string.Equals(record.Token, payload.Token.Trim(), StringComparison.Ordinal)
+        && string.Equals(record.Hwid, payload.Hwid.Trim(), StringComparison.Ordinal);
 
     if (!ok)
     {
         RegisterFailure(db, record, payload.DeviceId.Trim());
         SaveDb(dbPath, db);
         return Results.StatusCode(403);
-    }
-
-    if (ok && string.IsNullOrWhiteSpace(record.Hwid) && !string.IsNullOrWhiteSpace(payload.Hwid))
-    {
-        record.Hwid = payload.Hwid.Trim();
-        SaveDb(dbPath, db);
     }
 
     return Results.Ok(new { ok = true });
@@ -130,7 +139,8 @@ app.MapPost("/download", async (HttpRequest request) =>
     }
 
     var ok = string.Equals(record.DeviceId, payload.DeviceId.Trim(), StringComparison.Ordinal)
-        && string.Equals(record.Token, payload.Token.Trim(), StringComparison.Ordinal);
+        && string.Equals(record.Token, payload.Token.Trim(), StringComparison.Ordinal)
+        && string.Equals(record.Hwid, payload.Hwid?.Trim(), StringComparison.Ordinal);
 
     if (!ok)
     {
