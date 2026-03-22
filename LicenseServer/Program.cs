@@ -1,4 +1,4 @@
-﻿using System.Text.Json;
+using System.Text.Json;
 
 var builder = WebApplication.CreateBuilder(args);
 var app = builder.Build();
@@ -33,7 +33,8 @@ app.MapPost("/activate", async (HttpRequest request) =>
             DeviceId = deviceId,
             Token = Guid.NewGuid().ToString("N"),
             ActivatedAtUtc = DateTime.UtcNow,
-            IsBanned = false
+            IsBanned = false,
+            FailedAttempts = 0
         };
         db.Licenses[licenseKey] = record;
         SaveDb(dbPath, db);
@@ -47,6 +48,8 @@ app.MapPost("/activate", async (HttpRequest request) =>
 
     if (!string.Equals(record.DeviceId, deviceId, StringComparison.Ordinal))
     {
+        RegisterFailure(record);
+        SaveDb(dbPath, db);
         return Results.StatusCode(403);
     }
 
@@ -78,7 +81,61 @@ app.MapPost("/check", async (HttpRequest request) =>
     var ok = string.Equals(record.DeviceId, payload.DeviceId.Trim(), StringComparison.Ordinal)
         && string.Equals(record.Token, payload.Token.Trim(), StringComparison.Ordinal);
 
-    return ok ? Results.Ok(new { ok = true }) : Results.StatusCode(403);
+    if (!ok)
+    {
+        RegisterFailure(record);
+        SaveDb(dbPath, db);
+        return Results.StatusCode(403);
+    }
+
+    return Results.Ok(new { ok = true });
+});
+
+app.MapPost("/download", async (HttpRequest request) =>
+{
+    var payload = await JsonSerializer.DeserializeAsync<CheckRequest>(request.Body, new JsonSerializerOptions
+    {
+        PropertyNameCaseInsensitive = true
+    });
+
+    if (payload is null || string.IsNullOrWhiteSpace(payload.LicenseKey) || string.IsNullOrWhiteSpace(payload.DeviceId) || string.IsNullOrWhiteSpace(payload.Token))
+    {
+        return Results.BadRequest(new { error = "licenseKey, deviceId and token are required" });
+    }
+
+    if (!db.Licenses.TryGetValue(payload.LicenseKey.Trim(), out var record))
+    {
+        return Results.StatusCode(403);
+    }
+
+    if (record.IsBanned)
+    {
+        return Results.StatusCode(403);
+    }
+
+    var ok = string.Equals(record.DeviceId, payload.DeviceId.Trim(), StringComparison.Ordinal)
+        && string.Equals(record.Token, payload.Token.Trim(), StringComparison.Ordinal);
+
+    if (!ok)
+    {
+        RegisterFailure(record);
+        SaveDb(dbPath, db);
+        return Results.StatusCode(403);
+    }
+
+    var dllPath = Environment.GetEnvironmentVariable("DLL_PATH");
+    if (string.IsNullOrWhiteSpace(dllPath))
+    {
+        dllPath = Path.Combine(app.Environment.ContentRootPath, "assets", "Protected.dll");
+    }
+
+    if (!File.Exists(dllPath))
+    {
+        return Results.NotFound(new { error = "DLL not found on server" });
+    }
+
+    var fileName = Path.GetFileName(dllPath);
+    return Results.File(dllPath, "application/octet-stream", fileName);
 });
 
 app.MapPost("/reset", async (HttpRequest request) =>
@@ -143,7 +200,8 @@ app.MapPost("/ban", async (HttpRequest request) =>
             DeviceId = "",
             Token = "",
             ActivatedAtUtc = DateTime.UtcNow,
-            IsBanned = true
+            IsBanned = true,
+            FailedAttempts = 0
         };
         db.Licenses[key] = record;
     }
@@ -183,6 +241,7 @@ app.MapPost("/unban", async (HttpRequest request) =>
     if (db.Licenses.TryGetValue(key, out var record))
     {
         record.IsBanned = false;
+        record.FailedAttempts = 0;
         SaveDb(dbPath, db);
     }
 
@@ -218,13 +277,23 @@ app.MapPost("/list", async (HttpRequest request) =>
         deviceId = kvp.Value.DeviceId,
         token = kvp.Value.Token,
         activatedAtUtc = kvp.Value.ActivatedAtUtc,
-        isBanned = kvp.Value.IsBanned
+        isBanned = kvp.Value.IsBanned,
+        failedAttempts = kvp.Value.FailedAttempts
     });
 
     return Results.Ok(new { items });
 });
 
 app.Run();
+
+static void RegisterFailure(LicenseRecord record)
+{
+    record.FailedAttempts++;
+    if (record.FailedAttempts >= 10)
+    {
+        record.IsBanned = true;
+    }
+}
 
 static LicenseDb LoadDb(string path)
 {
@@ -262,4 +331,5 @@ class LicenseRecord
     public string Token { get; set; } = "";
     public DateTime ActivatedAtUtc { get; set; }
     public bool IsBanned { get; set; }
+    public int FailedAttempts { get; set; }
 }
