@@ -25,12 +25,14 @@ app.MapPost("/activate", async (HttpRequest request) =>
 
     var licenseKey = payload.LicenseKey.Trim();
     var deviceId = payload.DeviceId.Trim();
+    var hwid = payload.Hwid?.Trim() ?? "";
 
     if (!db.Licenses.TryGetValue(licenseKey, out var record))
     {
         record = new LicenseRecord
         {
             DeviceId = deviceId,
+            Hwid = hwid,
             Token = Guid.NewGuid().ToString("N"),
             ActivatedAtUtc = DateTime.UtcNow,
             IsBanned = false,
@@ -50,9 +52,15 @@ app.MapPost("/activate", async (HttpRequest request) =>
 
     if (!string.Equals(record.DeviceId, deviceId, StringComparison.Ordinal))
     {
-        RegisterFailure(record, deviceId);
+        RegisterFailure(db, record, deviceId);
         SaveDb(dbPath, db);
         return Results.StatusCode(403);
+    }
+
+    if (string.IsNullOrWhiteSpace(record.Hwid) && !string.IsNullOrWhiteSpace(hwid))
+    {
+        record.Hwid = hwid;
+        SaveDb(dbPath, db);
     }
 
     return Results.Ok(new ActivateResponse(record.Token, "ok"));
@@ -85,9 +93,15 @@ app.MapPost("/check", async (HttpRequest request) =>
 
     if (!ok)
     {
-        RegisterFailure(record, payload.DeviceId.Trim());
+        RegisterFailure(db, record, payload.DeviceId.Trim());
         SaveDb(dbPath, db);
         return Results.StatusCode(403);
+    }
+
+    if (ok && string.IsNullOrWhiteSpace(record.Hwid) && !string.IsNullOrWhiteSpace(payload.Hwid))
+    {
+        record.Hwid = payload.Hwid.Trim();
+        SaveDb(dbPath, db);
     }
 
     return Results.Ok(new { ok = true });
@@ -120,7 +134,7 @@ app.MapPost("/download", async (HttpRequest request) =>
 
     if (!ok)
     {
-        RegisterFailure(record, payload.DeviceId.Trim());
+        RegisterFailure(db, record, payload.DeviceId.Trim());
         SaveDb(dbPath, db);
         return Results.StatusCode(403);
     }
@@ -281,6 +295,7 @@ app.MapPost("/list", async (HttpRequest request) =>
     {
         licenseKey = kvp.Key,
         deviceId = kvp.Value.DeviceId,
+        hwid = kvp.Value.Hwid,
         token = kvp.Value.Token,
         activatedAtUtc = kvp.Value.ActivatedAtUtc,
         isBanned = kvp.Value.IsBanned,
@@ -294,7 +309,7 @@ app.MapPost("/list", async (HttpRequest request) =>
 
 app.Run();
 
-static void RegisterFailure(LicenseRecord record, string deviceId)
+static void RegisterFailure(LicenseDb db, LicenseRecord record, string deviceId)
 {
     record.FailedAttempts++;
     if (!string.IsNullOrWhiteSpace(deviceId) && !string.Equals(record.DeviceId, deviceId, StringComparison.Ordinal))
@@ -326,9 +341,9 @@ static void SaveDb(string path, LicenseDb db)
     File.WriteAllText(path, json);
 }
 
-record ActivateRequest(string LicenseKey, string DeviceId);
+record ActivateRequest(string LicenseKey, string DeviceId, string? Hwid);
 record ActivateResponse(string Token, string Status);
-record CheckRequest(string LicenseKey, string DeviceId, string Token);
+record CheckRequest(string LicenseKey, string DeviceId, string Token, string? Hwid);
 record ResetRequest(string AdminKey, string LicenseKey);
 record AdminRequest(string AdminKey);
 record BanRequest(string AdminKey, string LicenseKey);
@@ -341,6 +356,7 @@ class LicenseDb
 class LicenseRecord
 {
     public string DeviceId { get; set; } = "";
+    public string Hwid { get; set; } = "";
     public string Token { get; set; } = "";
     public DateTime ActivatedAtUtc { get; set; }
     public bool IsBanned { get; set; }
