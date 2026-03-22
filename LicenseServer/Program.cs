@@ -10,6 +10,11 @@ var dbPath = Path.Combine(dataDir, "licenses.json");
 var db = LoadDb(dbPath);
 
 app.MapGet("/health", () => Results.Ok(new { ok = true }));
+app.MapGet("/admin-check", () =>
+{
+    var adminKey = Environment.GetEnvironmentVariable("ADMIN_KEY") ?? "";
+    return Results.Ok(new { hasAdminKey = !string.IsNullOrWhiteSpace(adminKey), length = adminKey.Length });
+});
 
 app.MapPost("/activate", async (HttpRequest request) =>
 {
