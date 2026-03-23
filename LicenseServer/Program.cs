@@ -10,6 +10,15 @@ var dbPath = Path.Combine(dataDir, "licenses.json");
 var db = LoadDb(dbPath);
 
 app.MapGet("/health", () => Results.Ok(new { ok = true }));
+app.MapGet("/dll-version", () =>
+{
+    var version = Environment.GetEnvironmentVariable("DLL_VERSION");
+    if (string.IsNullOrWhiteSpace(version))
+    {
+        version = "1.0.0";
+    }
+    return Results.Ok(new { version = version.Trim() });
+});
 app.MapGet("/admin-check", () =>
 {
     var adminKey = Environment.GetEnvironmentVariable("ADMIN_KEY") ?? "";
