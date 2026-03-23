@@ -160,7 +160,13 @@ app.MapPost("/check", async (HttpRequest request) =>
         return Results.StatusCode(403);
     }
 
-    return Results.Ok(new { ok = true });
+    return Results.Ok(new
+    {
+        ok = true,
+        durationDays = record.DurationDays,
+        expiresAtUtc = record.ExpiresAtUtc,
+        remainingSeconds = GetRemainingSeconds(record)
+    });
 });
 
 app.MapPost("/download", async (HttpRequest request) =>
@@ -464,6 +470,17 @@ static bool IsExpired(LicenseRecord record)
     }
 
     return DateTime.UtcNow > record.ExpiresAtUtc.Value;
+}
+
+static int GetRemainingSeconds(LicenseRecord record)
+{
+    if (record.ExpiresAtUtc is null)
+    {
+        return -1;
+    }
+
+    var sec = (int)Math.Floor((record.ExpiresAtUtc.Value - DateTime.UtcNow).TotalSeconds);
+    return sec < 0 ? 0 : sec;
 }
 
 static LicenseDb LoadDb(string path)
