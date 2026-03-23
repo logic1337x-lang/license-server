@@ -12,12 +12,19 @@ var db = LoadDb(dbPath);
 app.MapGet("/health", () => Results.Ok(new { ok = true }));
 app.MapGet("/dll-version", () =>
 {
-    var version = Environment.GetEnvironmentVariable("DLL_VERSION");
-    if (string.IsNullOrWhiteSpace(version))
+    var versionPath = Path.Combine(app.Environment.ContentRootPath, "assets", "dll.version");
+    if (File.Exists(versionPath))
     {
-        version = "1.0.0";
+        var versionFromFile = File.ReadAllText(versionPath).Trim();
+        if (!string.IsNullOrWhiteSpace(versionFromFile))
+        {
+            return Results.Ok(new { version = versionFromFile });
+        }
     }
-    return Results.Ok(new { version = version.Trim() });
+
+    var versionFromEnv = Environment.GetEnvironmentVariable("DLL_VERSION");
+    var fallback = string.IsNullOrWhiteSpace(versionFromEnv) ? "1.0.0" : versionFromEnv.Trim();
+    return Results.Ok(new { version = fallback });
 });
 app.MapGet("/admin-check", () =>
 {
