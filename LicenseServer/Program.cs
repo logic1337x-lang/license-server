@@ -3,9 +3,15 @@
 var builder = WebApplication.CreateBuilder(args);
 var app = builder.Build();
 
-var dataDir = Path.Combine(app.Environment.ContentRootPath, "data");
-Directory.CreateDirectory(dataDir);
-var dbPath = Path.Combine(dataDir, "licenses.json");
+var configuredDbPath = Environment.GetEnvironmentVariable("DB_PATH");
+var dbPath = string.IsNullOrWhiteSpace(configuredDbPath)
+    ? Path.Combine(app.Environment.ContentRootPath, "data", "licenses.json")
+    : configuredDbPath.Trim();
+var dbDir = Path.GetDirectoryName(dbPath);
+if (!string.IsNullOrWhiteSpace(dbDir))
+{
+    Directory.CreateDirectory(dbDir);
+}
 
 var db = LoadDb(dbPath);
 
