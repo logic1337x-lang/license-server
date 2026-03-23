@@ -447,6 +447,59 @@ app.MapPost("/set-duration", async (HttpRequest request) =>
     return Results.Ok(new { ok = true, durationDays = record.DurationDays, expiresAtUtc = record.ExpiresAtUtc });
 });
 
+app.MapPost("/set-expiry-minutes", async (HttpRequest request) =>
+{
+    var adminKey = Environment.GetEnvironmentVariable("ADMIN_KEY");
+    if (string.IsNullOrWhiteSpace(adminKey))
+    {
+        return Results.StatusCode(404);
+    }
+
+    var payload = await JsonSerializer.DeserializeAsync<SetExpiryMinutesRequest>(request.Body, new JsonSerializerOptions
+    {
+        PropertyNameCaseInsensitive = true
+    });
+
+    if (payload is null || string.IsNullOrWhiteSpace(payload.AdminKey) || string.IsNullOrWhiteSpace(payload.LicenseKey))
+    {
+        return Results.BadRequest(new { error = "adminKey and licenseKey are required" });
+    }
+
+    if (!string.Equals(payload.AdminKey, adminKey, StringComparison.Ordinal))
+    {
+        return Results.StatusCode(403);
+    }
+
+    var minutes = payload.Minutes;
+    if (minutes < 0)
+    {
+        return Results.BadRequest(new { error = "minutes must be >= 0" });
+    }
+
+    var key = payload.LicenseKey.Trim();
+    if (!db.Licenses.TryGetValue(key, out var record))
+    {
+        return Results.NotFound(new { error = "license not found" });
+    }
+
+    if (minutes == 0)
+    {
+        record.ExpiresAtUtc = DateTime.UtcNow;
+    }
+    else
+    {
+        record.ExpiresAtUtc = DateTime.UtcNow.AddMinutes(minutes);
+    }
+
+    SaveDb(dbPath, db);
+    return Results.Ok(new
+    {
+        ok = true,
+        expiresAtUtc = record.ExpiresAtUtc,
+        remainingSeconds = GetRemainingSeconds(record)
+    });
+});
+
 app.MapPost("/set-variant", async (HttpRequest request) =>
 {
     var adminKey = Environment.GetEnvironmentVariable("ADMIN_KEY");
@@ -595,6 +648,7 @@ record ResetRequest(string AdminKey, string LicenseKey);
 record AdminRequest(string AdminKey);
 record BanRequest(string AdminKey, string LicenseKey);
 record SetDurationRequest(string AdminKey, string LicenseKey, int Days);
+record SetExpiryMinutesRequest(string AdminKey, string LicenseKey, int Minutes);
 record SetVariantRequest(string AdminKey, string LicenseKey, string Variant);
 
 class LicenseDb
