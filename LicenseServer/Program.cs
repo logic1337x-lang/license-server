@@ -74,6 +74,10 @@ app.MapPost("/activate", async (HttpRequest request) =>
     {
         return Results.StatusCode(403);
     }
+    if (IsExpired(record))
+    {
+        return Results.StatusCode(403);
+    }
 
     if (!string.Equals(record.DeviceId, deviceId, StringComparison.Ordinal))
     {
@@ -122,6 +126,10 @@ app.MapPost("/check", async (HttpRequest request) =>
     {
         return Results.StatusCode(403);
     }
+    if (IsExpired(record))
+    {
+        return Results.StatusCode(403);
+    }
 
     var ok = string.Equals(record.DeviceId, payload.DeviceId.Trim(), StringComparison.Ordinal)
         && string.Equals(record.Token, payload.Token.Trim(), StringComparison.Ordinal)
@@ -155,6 +163,10 @@ app.MapPost("/download", async (HttpRequest request) =>
     }
 
     if (record.IsBanned)
+    {
+        return Results.StatusCode(403);
+    }
+    if (IsExpired(record))
     {
         return Results.StatusCode(403);
     }
@@ -329,6 +341,9 @@ app.MapPost("/list", async (HttpRequest request) =>
         hwid = kvp.Value.Hwid,
         token = kvp.Value.Token,
         activatedAtUtc = kvp.Value.ActivatedAtUtc,
+        durationDays = kvp.Value.DurationDays,
+        expiresAtUtc = kvp.Value.ExpiresAtUtc,
+        isExpired = IsExpired(kvp.Value),
         isBanned = kvp.Value.IsBanned,
         failedAttempts = kvp.Value.FailedAttempts,
         otherDeviceAttempts = kvp.Value.OtherDeviceAttempts,
@@ -336,6 +351,60 @@ app.MapPost("/list", async (HttpRequest request) =>
     });
 
     return Results.Ok(new { items });
+});
+
+app.MapPost("/set-duration", async (HttpRequest request) =>
+{
+    var adminKey = Environment.GetEnvironmentVariable("ADMIN_KEY");
+    if (string.IsNullOrWhiteSpace(adminKey))
+    {
+        return Results.StatusCode(404);
+    }
+
+    var payload = await JsonSerializer.DeserializeAsync<SetDurationRequest>(request.Body, new JsonSerializerOptions
+    {
+        PropertyNameCaseInsensitive = true
+    });
+
+    if (payload is null || string.IsNullOrWhiteSpace(payload.AdminKey) || string.IsNullOrWhiteSpace(payload.LicenseKey))
+    {
+        return Results.BadRequest(new { error = "adminKey and licenseKey are required" });
+    }
+
+    if (!string.Equals(payload.AdminKey, adminKey, StringComparison.Ordinal))
+    {
+        return Results.StatusCode(403);
+    }
+
+    var key = payload.LicenseKey.Trim();
+    if (!db.Licenses.TryGetValue(key, out var record))
+    {
+        return Results.NotFound(new { error = "license not found" });
+    }
+
+    var days = payload.Days;
+    if (days < 0)
+    {
+        return Results.BadRequest(new { error = "days must be >= 0" });
+    }
+
+    record.DurationDays = days;
+    if (days == 0)
+    {
+        record.ExpiresAtUtc = null;
+    }
+    else
+    {
+        var activated = record.ActivatedAtUtc == default ? DateTime.UtcNow : record.ActivatedAtUtc;
+        if (record.ActivatedAtUtc == default)
+        {
+            record.ActivatedAtUtc = activated;
+        }
+        record.ExpiresAtUtc = activated.AddDays(days);
+    }
+
+    SaveDb(dbPath, db);
+    return Results.Ok(new { ok = true, durationDays = record.DurationDays, expiresAtUtc = record.ExpiresAtUtc });
 });
 
 app.Run();
@@ -352,6 +421,16 @@ static void RegisterFailure(LicenseDb db, LicenseRecord record, string deviceId)
     {
         record.IsBanned = true;
     }
+}
+
+static bool IsExpired(LicenseRecord record)
+{
+    if (record.ExpiresAtUtc is null)
+    {
+        return false;
+    }
+
+    return DateTime.UtcNow > record.ExpiresAtUtc.Value;
 }
 
 static LicenseDb LoadDb(string path)
@@ -378,6 +457,7 @@ record CheckRequest(string LicenseKey, string DeviceId, string Token, string? Hw
 record ResetRequest(string AdminKey, string LicenseKey);
 record AdminRequest(string AdminKey);
 record BanRequest(string AdminKey, string LicenseKey);
+record SetDurationRequest(string AdminKey, string LicenseKey, int Days);
 
 class LicenseDb
 {
@@ -390,6 +470,8 @@ class LicenseRecord
     public string Hwid { get; set; } = "";
     public string Token { get; set; } = "";
     public DateTime ActivatedAtUtc { get; set; }
+    public int DurationDays { get; set; }
+    public DateTime? ExpiresAtUtc { get; set; }
     public bool IsBanned { get; set; }
     public int FailedAttempts { get; set; }
     public int OtherDeviceAttempts { get; set; }
