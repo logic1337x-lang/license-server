@@ -60,6 +60,8 @@ app.MapPost("/activate", async (HttpRequest request) =>
             Hwid = hwid,
             Token = Guid.NewGuid().ToString("N"),
             ActivatedAtUtc = DateTime.UtcNow,
+            DurationDays = 0,
+            ExpiresAtUtc = null,
             IsBanned = false,
             FailedAttempts = 0,
             OtherDeviceAttempts = 0,
@@ -77,6 +79,22 @@ app.MapPost("/activate", async (HttpRequest request) =>
     if (IsExpired(record))
     {
         return Results.StatusCode(403);
+    }
+
+    var isUnbound = string.IsNullOrWhiteSpace(record.DeviceId)
+        && string.IsNullOrWhiteSpace(record.Token);
+    if (isUnbound)
+    {
+        record.DeviceId = deviceId;
+        record.Hwid = hwid;
+        record.Token = Guid.NewGuid().ToString("N");
+        record.ActivatedAtUtc = DateTime.UtcNow;
+        if (record.DurationDays > 0)
+        {
+            record.ExpiresAtUtc = record.ActivatedAtUtc.AddDays(record.DurationDays);
+        }
+        SaveDb(dbPath, db);
+        return Results.Ok(new ActivateResponse(record.Token, "activated"));
     }
 
     if (!string.Equals(record.DeviceId, deviceId, StringComparison.Ordinal))
@@ -379,7 +397,19 @@ app.MapPost("/set-duration", async (HttpRequest request) =>
     var key = payload.LicenseKey.Trim();
     if (!db.Licenses.TryGetValue(key, out var record))
     {
-        return Results.NotFound(new { error = "license not found" });
+        // Pre-provision non-activated license with expiry policy.
+        record = new LicenseRecord
+        {
+            DeviceId = "",
+            Hwid = "",
+            Token = "",
+            ActivatedAtUtc = default,
+            IsBanned = false,
+            FailedAttempts = 0,
+            OtherDeviceAttempts = 0,
+            LastOtherDeviceId = ""
+        };
+        db.Licenses[key] = record;
     }
 
     var days = payload.Days;
@@ -395,12 +425,15 @@ app.MapPost("/set-duration", async (HttpRequest request) =>
     }
     else
     {
-        var activated = record.ActivatedAtUtc == default ? DateTime.UtcNow : record.ActivatedAtUtc;
         if (record.ActivatedAtUtc == default)
         {
-            record.ActivatedAtUtc = activated;
+            // Not activated yet: expiry will be set on first activation.
+            record.ExpiresAtUtc = null;
         }
-        record.ExpiresAtUtc = activated.AddDays(days);
+        else
+        {
+            record.ExpiresAtUtc = record.ActivatedAtUtc.AddDays(days);
+        }
     }
 
     SaveDb(dbPath, db);
