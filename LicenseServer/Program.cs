@@ -209,7 +209,7 @@ app.MapPost("/download", async (HttpRequest request) =>
     var dllPath = Environment.GetEnvironmentVariable("DLL_PATH");
     if (string.IsNullOrWhiteSpace(dllPath))
     {
-        dllPath = Path.Combine(app.Environment.ContentRootPath, "assets", "Protected.dll");
+        dllPath = ResolveDllPath(app.Environment.ContentRootPath, record.Variant);
     }
 
     if (!File.Exists(dllPath))
@@ -368,6 +368,7 @@ app.MapPost("/list", async (HttpRequest request) =>
         durationDays = kvp.Value.DurationDays,
         expiresAtUtc = kvp.Value.ExpiresAtUtc,
         isExpired = IsExpired(kvp.Value),
+        variant = kvp.Value.Variant,
         isBanned = kvp.Value.IsBanned,
         failedAttempts = kvp.Value.FailedAttempts,
         otherDeviceAttempts = kvp.Value.OtherDeviceAttempts,
@@ -446,6 +447,63 @@ app.MapPost("/set-duration", async (HttpRequest request) =>
     return Results.Ok(new { ok = true, durationDays = record.DurationDays, expiresAtUtc = record.ExpiresAtUtc });
 });
 
+app.MapPost("/set-variant", async (HttpRequest request) =>
+{
+    var adminKey = Environment.GetEnvironmentVariable("ADMIN_KEY");
+    if (string.IsNullOrWhiteSpace(adminKey))
+    {
+        return Results.StatusCode(404);
+    }
+
+    var payload = await JsonSerializer.DeserializeAsync<SetVariantRequest>(request.Body, new JsonSerializerOptions
+    {
+        PropertyNameCaseInsensitive = true
+    });
+
+    if (payload is null || string.IsNullOrWhiteSpace(payload.AdminKey) || string.IsNullOrWhiteSpace(payload.LicenseKey))
+    {
+        return Results.BadRequest(new { error = "adminKey and licenseKey are required" });
+    }
+
+    if (!string.Equals(payload.AdminKey, adminKey, StringComparison.Ordinal))
+    {
+        return Results.StatusCode(403);
+    }
+
+    var variant = NormalizeVariant(payload.Variant);
+    if (string.IsNullOrWhiteSpace(variant))
+    {
+        return Results.BadRequest(new { error = "variant must be one of: bezgrab, sgrab, default" });
+    }
+
+    var key = payload.LicenseKey.Trim();
+    if (!db.Licenses.TryGetValue(key, out var record))
+    {
+        record = new LicenseRecord
+        {
+            DeviceId = "",
+            Hwid = "",
+            Token = "",
+            ActivatedAtUtc = default,
+            DurationDays = 0,
+            ExpiresAtUtc = null,
+            Variant = variant,
+            IsBanned = false,
+            FailedAttempts = 0,
+            OtherDeviceAttempts = 0,
+            LastOtherDeviceId = ""
+        };
+        db.Licenses[key] = record;
+    }
+    else
+    {
+        record.Variant = variant;
+    }
+
+    SaveDb(dbPath, db);
+    return Results.Ok(new { ok = true, variant = record.Variant });
+});
+
 app.Run();
 
 static void RegisterFailure(LicenseDb db, LicenseRecord record, string deviceId)
@@ -483,6 +541,35 @@ static int GetRemainingSeconds(LicenseRecord record)
     return sec < 0 ? 0 : sec;
 }
 
+static string NormalizeVariant(string? raw)
+{
+    var v = (raw ?? "").Trim().ToLowerInvariant();
+    if (v == "bezgrab" || v == "sgrab" || v == "default")
+    {
+        return v;
+    }
+    return "";
+}
+
+static string ResolveDllPath(string contentRootPath, string? variant)
+{
+    var assets = Path.Combine(contentRootPath, "assets");
+    var v = NormalizeVariant(variant);
+    string preferred = v switch
+    {
+        "bezgrab" => Path.Combine(assets, "Protected_bez.dll"),
+        "sgrab" => Path.Combine(assets, "Protected_s.dll"),
+        _ => Path.Combine(assets, "Protected.dll")
+    };
+
+    if (File.Exists(preferred))
+    {
+        return preferred;
+    }
+
+    return Path.Combine(assets, "Protected.dll");
+}
+
 static LicenseDb LoadDb(string path)
 {
     if (!File.Exists(path))
@@ -508,6 +595,7 @@ record ResetRequest(string AdminKey, string LicenseKey);
 record AdminRequest(string AdminKey);
 record BanRequest(string AdminKey, string LicenseKey);
 record SetDurationRequest(string AdminKey, string LicenseKey, int Days);
+record SetVariantRequest(string AdminKey, string LicenseKey, string Variant);
 
 class LicenseDb
 {
@@ -522,6 +610,7 @@ class LicenseRecord
     public DateTime ActivatedAtUtc { get; set; }
     public int DurationDays { get; set; }
     public DateTime? ExpiresAtUtc { get; set; }
+    public string Variant { get; set; } = "default";
     public bool IsBanned { get; set; }
     public int FailedAttempts { get; set; }
     public int OtherDeviceAttempts { get; set; }
