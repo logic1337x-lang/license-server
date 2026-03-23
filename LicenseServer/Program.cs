@@ -1,4 +1,5 @@
 ﻿using System.Text.Json;
+using Npgsql;
 
 var builder = WebApplication.CreateBuilder(args);
 var app = builder.Build();
@@ -631,6 +632,16 @@ static string ResolveDllPath(string contentRootPath, string? variant)
 
 static LicenseDb LoadDb(string path)
 {
+    var pgConnectionString = GetPostgresConnectionString();
+    if (!string.IsNullOrWhiteSpace(pgConnectionString))
+    {
+        var dbFromPg = LoadDbFromPostgres(pgConnectionString);
+        if (dbFromPg is not null)
+        {
+            return dbFromPg;
+        }
+    }
+
     if (!File.Exists(path))
     {
         return new LicenseDb();
@@ -643,8 +654,101 @@ static LicenseDb LoadDb(string path)
 
 static void SaveDb(string path, LicenseDb db)
 {
+    var pgConnectionString = GetPostgresConnectionString();
+    if (!string.IsNullOrWhiteSpace(pgConnectionString))
+    {
+        SaveDbToPostgres(pgConnectionString, db);
+        return;
+    }
+
     var json = JsonSerializer.Serialize(db, new JsonSerializerOptions { WriteIndented = true });
     File.WriteAllText(path, json);
+}
+
+static LicenseDb? LoadDbFromPostgres(string connectionString)
+{
+    try
+    {
+        using var conn = new NpgsqlConnection(connectionString);
+        conn.Open();
+
+        EnsurePostgresSchema(conn);
+
+        using var cmd = new NpgsqlCommand("SELECT data::text FROM app_state WHERE id = 1", conn);
+        var raw = cmd.ExecuteScalar() as string;
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return new LicenseDb();
+        }
+
+        return JsonSerializer.Deserialize<LicenseDb>(raw) ?? new LicenseDb();
+    }
+    catch
+    {
+        return new LicenseDb();
+    }
+}
+
+static void SaveDbToPostgres(string connectionString, LicenseDb db)
+{
+    using var conn = new NpgsqlConnection(connectionString);
+    conn.Open();
+
+    EnsurePostgresSchema(conn);
+
+    var json = JsonSerializer.Serialize(db, new JsonSerializerOptions { WriteIndented = true });
+    const string sql = @"INSERT INTO app_state (id, data, updated_at)
+VALUES (1, @data::jsonb, NOW())
+ON CONFLICT (id)
+DO UPDATE SET data = EXCLUDED.data, updated_at = NOW();";
+
+    using var cmd = new NpgsqlCommand(sql, conn);
+    cmd.Parameters.AddWithValue("data", json);
+    cmd.ExecuteNonQuery();
+}
+
+static void EnsurePostgresSchema(NpgsqlConnection conn)
+{
+    const string sql = @"CREATE TABLE IF NOT EXISTS app_state (
+    id INT PRIMARY KEY,
+    data JSONB NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);";
+
+    using var cmd = new NpgsqlCommand(sql, conn);
+    cmd.ExecuteNonQuery();
+}
+
+static string GetPostgresConnectionString()
+{
+    var raw = Environment.GetEnvironmentVariable("DATABASE_URL");
+    if (string.IsNullOrWhiteSpace(raw))
+    {
+        return "";
+    }
+
+    if (raw.StartsWith("postgres://", StringComparison.OrdinalIgnoreCase)
+        || raw.StartsWith("postgresql://", StringComparison.OrdinalIgnoreCase))
+    {
+        var uri = new Uri(raw);
+        var userInfo = uri.UserInfo.Split(':', 2);
+        var username = Uri.UnescapeDataString(userInfo[0]);
+        var password = userInfo.Length > 1 ? Uri.UnescapeDataString(userInfo[1]) : "";
+        var database = uri.AbsolutePath.TrimStart('/');
+
+        var builder = new NpgsqlConnectionStringBuilder
+        {
+            Host = uri.Host,
+            Port = uri.Port > 0 ? uri.Port : 5432,
+            Username = username,
+            Password = password,
+            Database = database
+        };
+
+        return builder.ConnectionString;
+    }
+
+    return raw;
 }
 
 record ActivateRequest(string LicenseKey, string DeviceId, string? Hwid);
@@ -676,3 +780,5 @@ class LicenseRecord
     public int OtherDeviceAttempts { get; set; }
     public string LastOtherDeviceId { get; set; } = "";
 }
+
+
